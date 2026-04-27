@@ -1,0 +1,7 @@
+pymupdf
+faiss-cpu
+groq
+sentence-transformers
+numpy
+rouge-score
+python-dotenv

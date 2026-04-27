@@ -1,0 +1,725 @@
+================================================================
+   RESEARCH PAPER ASSISTANT - COMPLETE PROJECT EXPLANATION
+================================================================
+
+This project is a full NLP/LLM pipeline that takes a research paper (PDF),
+processes it, and provides 10+ intelligent features like Q&A, summarization,
+peer review, citation extraction, and more — all powered by Llama 3.3 70B
+via the Groq API.
+
+================================================================
+SECTION 1: OVERALL FLOW
+================================================================
+
+When you upload a PDF, this is what happens step by step:
+
+  1. PDF is received by the server (server.py)
+  2. Text is extracted from every page (pdf_loader.py)
+  3. Text is split into 500-word chunks with 50-word overlap (chunker.py)
+  4. Each chunk is converted into a 384-dimensional vector (vector_store.py)
+  5. All vectors are stored in a FAISS index (vector_store.py)
+  6. All feature modules are initialized and ready (main.py / server.py)
+
+At query time (e.g., user asks a question):
+  1. Question is converted to a vector
+  2. FAISS finds the 3 most similar chunks
+  3. Those chunks + question are sent to Llama 3.3 70B via Groq
+  4. Answer is returned to the user
+
+================================================================
+SECTION 2: PDF LOADER (src/pdf_loader.py)
+================================================================
+
+Library used: PyMuPDF (imported as "fitz")
+
+What it does:
+  - Opens the PDF file
+  - Iterates over every page
+  - Calls page.get_text() on each page to extract raw text
+  - Concatenates all pages into one large string
+  - Returns the full text stripped of leading/trailing whitespace
+
+Why PyMuPDF?
+  - Faster and more accurate than pdfplumber or pdfminer
+  - Handles complex layouts, multi-column papers, and embedded fonts
+  - Widely used in production NLP pipelines
+
+================================================================
+SECTION 3: TEXT CHUNKING (src/chunker.py)
+================================================================
+
+Why chunking is needed:
+  - A research paper can be 10,000 to 50,000+ words
+  - LLMs have a context window limit (can't process the whole paper at once)
+  - Even if they could, the model loses focus on long inputs
+  - Solution: break the paper into small, manageable pieces
+
+How it works:
+  - Split the full text into individual words
+  - Use a sliding window of 500 words
+  - Move the window forward by 450 words each time (not 500)
+  - The 50-word overlap is the key design decision
+
+  Example:
+    Chunk 1: words 1 to 500
+    Chunk 2: words 451 to 950   (overlaps with chunk 1 by 50 words)
+    Chunk 3: words 901 to 1400  (overlaps with chunk 2 by 50 words)
+
+Why overlap matters:
+  Without overlap, a sentence at the boundary gets split:
+    Chunk 1 ends: "...the model achieves high accuracy"
+    Chunk 2 starts: "when trained on large datasets..."
+  Neither chunk has the complete sentence.
+
+  With 50-word overlap, both chunks contain the boundary sentence,
+  so retrieval never misses context at the edges.
+
+================================================================
+SECTION 4: EMBEDDINGS (src/vector_store.py)
+================================================================
+
+Library used: SentenceTransformer (model: all-MiniLM-L6-v2)
+
+What is an embedding?
+  An embedding converts text into a list of numbers (a vector) that
+  captures the MEANING of the text, not just the words.
+
+  Example:
+    "neural networks learn patterns"  → [0.21, -0.54, 0.87, ...]  (384 numbers)
+    "deep learning finds features"    → [0.19, -0.51, 0.90, ...]  (384 numbers)
+    "photosynthesis in plants"        → [-0.72, 0.33, -0.11, ...]  (384 numbers)
+
+  The first two are semantically similar → their vectors are close together.
+  The third is unrelated → its vector is far away.
+
+  This is the core idea: semantic similarity = geometric closeness in vector space.
+
+Why all-MiniLM-L6-v2?
+  - Runs LOCALLY on your machine (no API call, no cost)
+  - Only 80MB in size, fast to load and run
+  - Produces 384-dimensional vectors
+  - Strong performance on semantic similarity benchmarks
+  - Used in production by many NLP systems
+
+Process:
+  1. model.encode(chunks) → converts all chunks to vectors at once
+  2. Result is a 2D numpy array: shape = (number_of_chunks, 384)
+  3. This array is passed to FAISS for indexing
+
+================================================================
+SECTION 5: FAISS VECTOR INDEX (src/vector_store.py)
+================================================================
+
+Library used: FAISS (Facebook AI Similarity Search)
+
+What is FAISS?
+  FAISS is a library for efficient similarity search over dense vectors.
+  Instead of looping through all vectors and computing distance manually,
+  FAISS does it in optimized C++ with hardware acceleration.
+
+Index type used: IndexFlatL2
+  - "Flat" = brute force, checks every stored vector (exact search)
+  - "L2" = Euclidean distance formula:
+      distance = sqrt((a1-b1)^2 + (a2-b2)^2 + ... + (a384-b384)^2)
+  - Smaller distance = more similar meaning
+
+How it works:
+  Building the index:
+    1. All chunk vectors (shape: N x 384) are added to the index
+    2. FAISS stores them internally for fast lookup
+
+  Searching the index:
+    1. User's question is encoded into a vector (1 x 384)
+    2. index.search(query_vector, k=3) is called
+    3. FAISS returns the 3 chunk vectors with smallest L2 distance
+    4. Those 3 chunks are the most semantically relevant to the question
+
+Visual (simplified to 2D):
+  [chunk: "neural network training"]  ●
+                                       ↑ small distance (similar topic)
+  [query: "how does training work?"]  ★
+                                       ↓ large distance (different topic)
+  [chunk: "photosynthesis process"]   ●
+
+Why FAISS over a simple loop?
+  - For 1000 chunks: a loop works fine
+  - For 100,000 chunks: FAISS is 100x faster
+  - FAISS supports GPU acceleration and approximate search for even larger scales
+
+
+================================================================
+SECTION 6: RAG SYSTEM (src/rag_system.py)
+================================================================
+
+RAG = Retrieval-Augmented Generation
+
+The problem RAG solves:
+  If you ask an LLM "What dataset did this paper use?", it will try to
+  answer from its training data — which doesn't include your specific paper.
+  This causes hallucinations (made-up answers).
+
+  RAG fixes this by RETRIEVING relevant text from the paper first,
+  then AUGMENTING the LLM prompt with that text as context.
+
+Step-by-step:
+  1. User asks: "What dataset was used?"
+  2. Question is encoded into a vector
+  3. FAISS returns top-3 most relevant chunks from the paper
+  4. A prompt is constructed:
+
+       Context:
+       [chunk 1 text]
+
+       [chunk 2 text]
+
+       [chunk 3 text]
+
+       Question: What dataset was used?
+
+       Answer based on the context:
+
+  5. This prompt is sent to Llama 3.3 70B via Groq API
+  6. The LLM answers ONLY based on the provided context
+  7. Answer is returned to the user
+
+Why this works:
+  - The LLM is grounded in actual paper content
+  - Hallucinations are drastically reduced
+  - Only relevant sections are sent (not the whole paper)
+  - Works even for very long papers that exceed context limits
+
+Conversation history:
+  The server also maintains conversation_history — a list of all
+  previous questions and answers. This allows follow-up questions
+  to be contextually aware of the conversation so far.
+
+Streaming:
+  The /stream endpoint uses Groq's streaming API. Instead of waiting
+  for the full response, tokens are sent one by one as Server-Sent Events
+  (SSE). The frontend displays them in real-time as the model generates,
+  giving a ChatGPT-like typing effect.
+
+================================================================
+SECTION 7: GROQ API + LLAMA 3.3 70B
+================================================================
+
+What is Groq?
+  Groq is NOT a model — it is a hardware company that built custom chips
+  called LPUs (Language Processing Units) specifically for LLM inference.
+  LPUs are much faster than GPUs for sequential token generation.
+
+What is Llama 3.3 70B?
+  - Open-source LLM by Meta with 70 billion parameters
+  - "70B" means 70 billion learned weights
+  - State-of-the-art performance on reasoning, summarization, and Q&A
+  - Used for EVERY feature in this project
+
+Why Groq over OpenAI?
+  - Free tier available (no credit card needed)
+  - Response speed: ~500 tokens/second (vs ~50 for OpenAI)
+  - Same or better quality for research paper tasks
+  - Simple API, compatible with OpenAI SDK format
+
+How the API is called (same pattern everywhere):
+  client = Groq(api_key=API_KEY)
+  response = client.chat.completions.create(
+      model="llama-3.3-70b-versatile",
+      messages=[{"role": "user", "content": prompt}]
+  )
+  result = response.choices[0].message.content
+
+================================================================
+SECTION 8: SUMMARIZER (src/summarizer.py)
+================================================================
+
+What it does:
+  Sends the first 15,000 characters of the paper to Llama 3.3 70B
+  with a prompt asking for a summary within max_length words (default 500).
+
+Why only the first 15,000 characters?
+  Research papers follow a standard structure:
+    - Abstract (first ~300 words): core contribution and results
+    - Introduction (next ~1000 words): background and motivation
+    - Conclusion (near the end, but often repeated in intro): key findings
+  The beginning of a paper contains 90% of the key information.
+  Sending 15,000 characters captures abstract + introduction comfortably.
+
+Prompt engineering used:
+  "Summarize the following research paper in {max_length} words or less:"
+  Simple but effective — the LLM knows what a research paper summary
+  should contain (problem, method, results, conclusion).
+
+================================================================
+SECTION 9: DOMAIN CLASSIFIER (src/classifier.py)
+================================================================
+
+What it does:
+  Classifies the paper into a primary research domain and 2-3 sub-domains.
+
+Technique used: Zero-Shot Classification
+  "Zero-shot" means no training data or fine-tuning is needed.
+  The LLM is given a list of possible domains and asked to pick one
+  purely based on its pre-trained knowledge and the paper text.
+
+Domains it can classify into:
+  AI/ML, Computer Science, Biology, Physics, Chemistry, Medicine,
+  Mathematics, Engineering, Social Sciences, Other
+
+Output format (enforced by the prompt):
+  Primary Domain: [domain]
+  Sub-domains: [sub1, sub2, sub3]
+  Confidence: [High/Medium/Low]
+
+Why only first 3000 characters?
+  The abstract and introduction clearly state the research domain.
+  Sending more text wastes tokens without improving accuracy.
+
+================================================================
+SECTION 10: LITERATURE REVIEW GENERATOR (src/literature_review.py)
+================================================================
+
+What it does:
+  Takes text from one or more papers and generates a structured
+  academic literature review.
+
+Two functions:
+
+  generate_review():
+    Prompt asks the LLM to produce:
+      1. Overview of the research area
+      2. Key themes and trends
+      3. Major findings and contributions
+      4. Research gaps
+      5. Future directions
+    Uses first 10,000 characters of combined paper text.
+
+  generate_comparative_analysis():
+    Asks the LLM to compare methodologies, findings, and contributions
+    of multiple papers side by side.
+    Uses first 8,000 characters.
+
+Why this is powerful:
+  A human researcher would spend days reading and synthesizing multiple
+  papers into a literature review. This does it in seconds by leveraging
+  the LLM's ability to understand and synthesize academic text.
+
+
+================================================================
+SECTION 11: CITATION MANAGER (src/citation_manager.py)
+================================================================
+
+What it does:
+  Extracts all citations from a paper and can generate formatted
+  citations in APA, MLA, or any requested style.
+
+Three-stage process:
+
+  Stage 1 — Smart Section Extraction (regex):
+    Before sending anything to the LLM, the code uses Python's "re"
+    module to find the references section using regex patterns:
+      - r'(?i)\n\s*references\s*\n'
+      - r'(?i)\n\s*bibliography\s*\n'
+      - r'(?i)\n\s*works cited\s*\n'
+    If found, only that section is extracted (not the whole paper).
+    This reduces noise and saves tokens.
+
+    It also detects where the references section ENDS by looking for:
+      - Appendix
+      - Acknowledgments
+      - Supplementary
+
+  Stage 2 — LLM Parsing:
+    The extracted references section is sent to the LLM with a prompt
+    asking it to extract structured data for each citation:
+      - Authors (last name, first initial)
+      - Year
+      - Title
+      - Journal/Conference/Source
+
+  Stage 3 — Citation Generation:
+    Given paper metadata, the LLM formats it in the requested style.
+    Example APA: Smith, J. (2023). Title of paper. Journal Name, 10(2), 45-67.
+
+  generate_bibliography():
+    Takes a list of raw citations and asks the LLM to produce a
+    clean, properly formatted bibliography.
+
+Why regex first, then LLM?
+  Regex is deterministic and fast. It narrows down the relevant section
+  before the LLM processes it, improving accuracy and reducing cost.
+
+================================================================
+SECTION 12: PEER REVIEWER (src/reviewer.py)
+================================================================
+
+What it does:
+  Mimics the academic peer review process. Evaluates the paper on
+  a structured rubric and gives a final recommendation.
+
+Scoring rubric (1-5 scale):
+  - Novelty and Significance
+  - Technical Quality
+  - Clarity and Presentation
+  - Experimental Validation
+
+Full review output includes:
+  - Summary of the paper
+  - Strengths (3-5 points)
+  - Weaknesses (3-5 points)
+  - Detailed Comments
+  - Questions for Authors
+  - Recommendation: Accept / Minor Revision / Major Revision / Reject
+
+Uses first 12,000 characters (enough to cover abstract, intro,
+methodology, and results sections).
+
+check_methodology():
+  A focused sub-feature that analyzes only the research methods:
+    1. What research methods were used
+    2. Strengths of the approach
+    3. Potential limitations
+    4. Suggestions for improvement
+
+Why this is useful:
+  Getting a peer review from a real expert takes weeks.
+  This gives instant structured feedback that can help authors
+  identify weaknesses before submission.
+
+================================================================
+SECTION 13: CONSISTENCY CHECKER (src/consistency_checker.py)
+================================================================
+
+What it does:
+  Verifies that generated content (summaries, reviews, etc.) is
+  factually consistent with the original paper. Detects hallucinations.
+
+Why this matters:
+  LLMs can "hallucinate" — confidently state facts that are wrong
+  or not present in the source. This is the biggest risk in any
+  LLM-based system.
+
+Two functions:
+
+  check_consistency(source_text, generated_text):
+    Sends both texts to the LLM and asks it to analyze:
+      1. Factual accuracy — are the facts in generated text correct?
+      2. Hallucinations — is there any made-up information?
+      3. Consistency score (0-100)
+      4. Specific issues found
+    Uses first 5,000 chars of source and 2,000 chars of generated text.
+
+  verify_claims(text, claims):
+    Given a list of specific statements/claims, checks each one
+    against the source text and labels it:
+      - Supported
+      - Partially Supported
+      - Not Supported
+
+How it's used in the server:
+  When the user clicks "Consistency Check", the server:
+    1. First generates a summary of the paper
+    2. Then runs check_consistency(original_paper, generated_summary)
+    3. Returns the consistency analysis
+
+This creates a self-verification loop — generate then verify.
+
+================================================================
+SECTION 14: ARXIV INTEGRATION (src/arxiv_integration.py)
+================================================================
+
+What it does:
+  Searches the arXiv academic database and retrieves paper metadata
+  and PDF download links — without any third-party library.
+
+Libraries used: NONE (pure Python only)
+  - urllib.request — for making HTTP requests
+  - urllib.parse — for URL encoding query parameters
+  - xml.etree.ElementTree — for parsing XML responses
+
+How it works:
+  arXiv provides a public Atom/XML API:
+    URL: http://export.arxiv.org/api/query?search_query=...&max_results=5
+
+  The code:
+    1. Builds the URL with urllib.parse.urlencode()
+    2. Fetches the response with urllib.request.urlopen()
+    3. Parses the XML with ElementTree
+    4. Extracts for each paper:
+         - Title
+         - Authors (list)
+         - Abstract/Summary
+         - Published date
+         - PDF URL (constructed by replacing "abs" with "pdf" in the ID URL)
+
+Three search modes:
+  search_papers(query, max_results):
+    Free-text keyword search. E.g., "transformer attention mechanism"
+
+  get_paper_by_id(arxiv_id):
+    Fetch a specific paper by its arXiv ID. E.g., "2303.08774"
+
+  search_by_category(category, max_results):
+    Search within a specific arXiv category. E.g.:
+      - cs.AI  (Artificial Intelligence)
+      - cs.LG  (Machine Learning)
+      - q-bio.NC (Neurons and Cognition)
+      - physics.optics
+
+Why no third-party library?
+  Using pure Python keeps dependencies minimal. The arXiv API is
+  simple enough that a library like "arxiv" adds no real value here.
+
+================================================================
+SECTION 15: EVALUATOR (src/evaluator.py)
+================================================================
+
+What it does:
+  Quantitatively measures the quality of generated summaries using
+  ROUGE metrics — the standard evaluation method in NLP research.
+
+Library used: rouge_score
+
+ROUGE = Recall-Oriented Understudy for Gisting Evaluation
+
+Three metrics:
+
+  ROUGE-1 (Unigram Overlap):
+    Measures overlap of individual words between generated and reference.
+    Example:
+      Reference: "the model achieves high accuracy on benchmarks"
+      Generated: "the model performs well on benchmarks"
+      Overlap: "the", "model", "on", "benchmarks" = 4 words
+    Precision = 4/7, Recall = 4/7, F1 = harmonic mean
+
+  ROUGE-2 (Bigram Overlap):
+    Measures overlap of consecutive word pairs.
+    "the model" is a bigram. If it appears in both, it counts.
+    Captures phrase-level similarity, not just individual words.
+
+  ROUGE-L (Longest Common Subsequence):
+    Finds the longest sequence of words that appears in both texts
+    in the same order (not necessarily consecutive).
+    Captures sentence-level structure and fluency.
+
+Output: F1-score for each metric (0 to 1, higher is better)
+
+How it's used in the server:
+  1. Generate a summary of the paper
+  2. Use the first 3,000 characters of the paper as the "reference"
+  3. Compute ROUGE scores between summary and reference
+  4. Display Precision, Recall, and F1 for all three metrics
+
+Why ROUGE?
+  It gives an objective, numerical score to compare summaries.
+  Used in academic papers to benchmark summarization systems.
+
+================================================================
+SECTION 16: ABSTRACT SIMPLIFIER (src/abstract_simplifier.py)
+================================================================
+
+What it does:
+  Rewrites the paper's abstract (or beginning) in plain English
+  suitable for a general (non-expert) audience.
+
+Prompt instructions given to the LLM:
+  - Use simple, everyday language
+  - Avoid jargon and technical terms
+  - Explain concepts in plain English
+  - Keep it concise (3-5 sentences)
+  - Make it engaging and accessible
+  - Target: high school reading level
+
+Uses first 5,000 characters of the paper.
+
+Why this is useful:
+  Research papers are written for domain experts. This feature makes
+  the content accessible to students, journalists, policymakers, or
+  anyone without a technical background.
+
+
+================================================================
+SECTION 17: WEB SERVER (server.py)
+================================================================
+
+What it does:
+  Acts as the backend HTTP server that connects the Web UI (frontend)
+  to all the Python modules (backend).
+
+Library used: Python's built-in http.server
+  No Flask, no FastAPI, no Django — zero extra dependencies.
+  Uses BaseHTTPRequestHandler to handle all HTTP requests manually.
+
+API Endpoints:
+
+  GET  /              → Serves the index.html web UI
+  POST /upload        → Receives PDF, runs init_session(), returns chunk count
+  POST /action        → Runs any feature (summarize, classify, review, etc.)
+  POST /stream        → Streams Q&A response token by token (SSE)
+  POST /export        → Returns content as downloadable .txt or .md file
+  POST /history/save  → Downloads conversation history as JSON
+  POST /history/load  → Clears conversation history
+  POST /arxiv/search  → Searches arXiv and returns paper list
+  POST /arxiv/download → Downloads a PDF from arXiv URL
+
+Session management:
+  A global "session" dictionary stores all initialized objects after
+  a PDF is uploaded:
+    - text: full extracted paper text
+    - rag: RAGSystem instance
+    - summarizer: Summarizer instance
+    - lit_review: LiteratureReviewGenerator instance
+    - citations: CitationManager instance
+    - reviewer: PaperReviewer instance
+    - consistency: ConsistencyChecker instance
+    - classifier: DomainClassifier instance
+    - simplifier: AbstractSimplifier instance
+
+  This means all modules share the same paper text and vector store
+  without re-processing the PDF on every request.
+
+PDF Upload handling:
+  The upload uses multipart/form-data (standard HTML file upload format).
+  The server manually parses the multipart boundary to extract the PDF bytes,
+  writes them to a temporary file, processes it, then deletes the temp file.
+
+Streaming (Server-Sent Events):
+  The /stream endpoint uses Groq's streaming API.
+  Tokens are sent as:  data: {"token": "word"}\n\n
+  The frontend listens with EventSource and appends each token to the UI.
+  This gives a real-time typing effect.
+
+CORS headers:
+  Every response includes: Access-Control-Allow-Origin: *
+  This allows the frontend to call the API from any origin.
+
+================================================================
+SECTION 18: WEB UI (static/index.html)
+================================================================
+
+Built with: Pure HTML + CSS + JavaScript (no framework, no build step)
+
+Features:
+  - Drag-and-drop PDF upload (or click to browse)
+  - 7 feature tabs: Ask Questions, Domain, Summary, Literature Review,
+    Citations, Peer Review, Consistency Check
+  - Real-time streaming for Q&A (tokens appear as they're generated)
+  - Conversation history display
+  - Export results as .txt or .md
+  - arXiv search panel with paper cards and download buttons
+  - Responsive design
+
+Why no React/Vue/Angular?
+  - Zero build step, zero npm, zero dependencies
+  - Loads instantly
+  - Easier to understand and explain
+  - The logic is simple enough that a framework adds complexity, not value
+
+================================================================
+SECTION 19: KEY DESIGN DECISIONS (for panel questions)
+================================================================
+
+1. Why chunking with overlap instead of without?
+   Without overlap, sentences at chunk boundaries get split and lost.
+   50-word overlap ensures every sentence appears in at least one
+   complete chunk, improving retrieval accuracy.
+
+2. Why local embeddings (SentenceTransformer) instead of OpenAI embeddings?
+   - No API cost (runs on your machine)
+   - No data sent to external servers (privacy)
+   - Fast enough for research paper sizes
+   - all-MiniLM-L6-v2 is specifically optimized for semantic similarity
+
+3. Why FAISS IndexFlatL2 instead of approximate search?
+   For a single paper (typically 50-200 chunks), brute-force exact search
+   is fast enough (milliseconds). Approximate indexes (IVF, HNSW) are
+   needed only for millions of vectors.
+
+4. Why Groq instead of running a local LLM?
+   Running Llama 3.3 70B locally requires ~140GB of GPU VRAM.
+   Groq provides the same model via API for free, with faster inference
+   than most local setups.
+
+5. Why Python's built-in http.server instead of Flask?
+   Flask would add a dependency. The built-in server handles all needed
+   functionality: routing, file uploads, streaming, CORS. Keeping it
+   minimal demonstrates understanding of HTTP fundamentals.
+
+6. Why send only the first N characters to each feature?
+   Different features need different amounts of context:
+   - Classification: 3,000 chars (abstract is enough)
+   - Summarization: 15,000 chars (abstract + intro + methods)
+   - Peer Review: 12,000 chars (need methodology and results)
+   - Consistency: 5,000 chars source (key claims are in the beginning)
+   Sending more wastes tokens and can confuse the model.
+
+7. How does the system handle hallucinations?
+   Two layers:
+   a) RAG grounds answers in retrieved chunks (primary defense)
+   b) Consistency Checker cross-verifies generated text against source
+
+================================================================
+SECTION 20: COMMON PANEL QUESTIONS AND ANSWERS
+================================================================
+
+Q: What is RAG and why is it better than just asking the LLM?
+A: RAG retrieves relevant sections from the actual paper and injects
+   them into the prompt. The LLM answers based on that specific text,
+   not from its training data. This eliminates hallucinations about
+   paper-specific facts (datasets, results, authors, methods).
+
+Q: How does FAISS find similar chunks?
+A: It computes L2 (Euclidean) distance between the query vector and
+   every stored chunk vector. The chunks with the smallest distance
+   are the most semantically similar. For 384-dimensional vectors,
+   this is extremely fast even with hundreds of chunks.
+
+Q: What is the difference between ROUGE-1, ROUGE-2, and ROUGE-L?
+A: ROUGE-1 measures single word overlap, ROUGE-2 measures word pair
+   overlap (captures phrases), ROUGE-L measures the longest matching
+   word sequence (captures sentence structure). Together they give a
+   complete picture of summary quality.
+
+Q: Why use zero-shot classification instead of training a classifier?
+A: Training a classifier requires labeled data (thousands of papers
+   with domain labels). Zero-shot uses the LLM's pre-trained knowledge
+   to classify without any training data. For this use case, it works
+   just as well and requires no data collection or training pipeline.
+
+Q: How does the streaming work?
+A: Groq's API supports streaming mode where tokens are returned one
+   by one as they're generated. The server sends each token as a
+   Server-Sent Event (SSE). The browser's EventSource API listens
+   and appends each token to the UI in real time.
+
+Q: What happens if the paper is very long?
+A: The chunking + FAISS approach handles any length. The paper is
+   split into chunks regardless of total length. FAISS scales to
+   millions of vectors, so even a 1000-page document would work.
+   Only the most relevant chunks are sent to the LLM, not the whole paper.
+
+Q: Why not use LangChain?
+A: LangChain is a framework that abstracts the same pipeline this
+   project implements manually. Building it from scratch demonstrates
+   deeper understanding of how RAG, embeddings, and vector search
+   actually work under the hood.
+
+================================================================
+SECTION 21: TECHNOLOGY STACK SUMMARY
+================================================================
+
+  Component              Library/Tool              Purpose
+  ─────────────────────────────────────────────────────────────
+  PDF Extraction         PyMuPDF (fitz)            Read PDF pages
+  Text Chunking          Custom Python             Sliding window split
+  Embeddings             SentenceTransformer       Text → 384-dim vector
+  Vector Search          FAISS                     Nearest neighbor search
+  LLM Inference          Groq API + Llama 3.3 70B  All AI features
+  HTTP Server            Python http.server        Backend API
+  Frontend               HTML/CSS/JS               Web UI
+  arXiv Search           urllib + ElementTree      Paper discovery
+  Evaluation             rouge_score               Summary quality metrics
+  Environment            python-dotenv             API key management
+
+================================================================
+END OF DOCUMENT
+================================================================
