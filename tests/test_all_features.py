@@ -41,7 +41,7 @@ def test_chunking(text):
 
 def test_embeddings(chunks):
     from vector_store import VectorStore
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY")
     vector_store = VectorStore(api_key)
     vector_store.add_documents(chunks[:3])  # Test with 3 chunks
     print("Embeddings created successfully")
@@ -49,7 +49,7 @@ def test_embeddings(chunks):
 
 def test_domain_classification(text):
     from classifier import DomainClassifier
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY")
     classifier = DomainClassifier(api_key)
     domain = classifier.classify(text)
     print(f"Domain: {domain[:100]}...")
@@ -57,7 +57,7 @@ def test_domain_classification(text):
 
 def test_rag(vector_store):
     from rag_system import RAGSystem
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY")
     rag = RAGSystem(api_key, vector_store)
     answer = rag.query("What is this paper about?")
     print(f"Answer: {answer[:100]}...")
@@ -65,7 +65,7 @@ def test_rag(vector_store):
 
 def test_summarization(text):
     from summarizer import Summarizer
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY")
     summarizer = Summarizer(api_key)
     summary = summarizer.summarize(text)
     print(f"Summary: {summary[:100]}...")
@@ -73,7 +73,7 @@ def test_summarization(text):
 
 def test_literature_review(text):
     from literature_review import LiteratureReviewGenerator
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY")
     lit_review = LiteratureReviewGenerator(api_key)
     review = lit_review.generate_review(text)
     print(f"Review: {review[:100]}...")
@@ -81,7 +81,7 @@ def test_literature_review(text):
 
 def test_citations(text):
     from citation_manager import CitationManager
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY")
     citation_mgr = CitationManager(api_key)
     citations = citation_mgr.extract_citations(text)
     print(f"Citations: {citations[:100]}...")
@@ -89,7 +89,7 @@ def test_citations(text):
 
 def test_peer_review(text):
     from reviewer import PaperReviewer
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY")
     reviewer = PaperReviewer(api_key)
     review = reviewer.review_paper(text)
     print(f"Review: {review[:100]}...")
@@ -97,7 +97,7 @@ def test_peer_review(text):
 
 def test_consistency(text, summary):
     from consistency_checker import ConsistencyChecker
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY")
     consistency = ConsistencyChecker(api_key)
     result = consistency.check_consistency(text, summary)
     print(f"Consistency: {result[:100]}...")

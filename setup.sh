@@ -26,7 +26,7 @@ pip install -r requirements.txt
 if [ ! -f .env ]; then
     echo "📝 Creating .env file..."
     cp .env.example .env
-    echo "⚠️  Please edit .env and add your GEMINI_API_KEY"
+    echo "⚠️  Please edit .env and add your GROQ_API_KEY"
     echo "   Get your key from: https://makersuite.google.com/app/apikey"
 else
     echo "✓ .env file already exists"
@@ -36,6 +36,6 @@ echo ""
 echo "✅ Setup complete!"
 echo ""
 echo "Next steps:"
-echo "1. Edit .env and add your GEMINI_API_KEY"
+echo "1. Edit .env and add your GROQ_API_KEY"
 echo "2. Activate the virtual environment: source venv/bin/activate"
 echo "3. Run the application: python main.py"

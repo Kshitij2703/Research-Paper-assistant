@@ -39,7 +39,7 @@ The **Research Paper Assistant** is a comprehensive web-based application design
 ### Key Highlights
 
 ✅ **7 Analysis Features** - From summarization to peer review  
-✅ **Streaming Q&A** - ChatGPT-like real-time responses  
+✅ **Streaming Q&A** - Token-by-token streaming responses  
 ✅ **arXiv Search** - Find and analyze papers in one click  
 ✅ **Local Embeddings** - No API cost for vector generation  
 ✅ **Export Everything** - Markdown and JSON downloads  
